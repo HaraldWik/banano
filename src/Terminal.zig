@@ -66,6 +66,9 @@ pub fn init(file: std.fs.File) !@This() {
 }
 
 pub fn deinit(self: @This()) void {
+    // show mouse "\x1b[?25h"
+    //                  old buffer
+    self.file.writeAll("\x1b[?1049l") catch unreachable;
     std.posix.tcsetattr(self.file.handle, .FLUSH, self.original) catch unreachable;
 }
 
