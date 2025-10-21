@@ -7,12 +7,13 @@ pub fn main() !void {
         break std.mem.span(arg);
     } else "tmp";
     var file_name_buffer: [std.fs.max_name_bytes]u8 = undefined;
-    const out_file_name = try std.fmt.bufPrint(&file_name_buffer, "{s}.banano", .{in_file_name});
+    const out_file_name = try std.fmt.bufPrint(&file_name_buffer, ".{s}.banano", .{in_file_name});
     const file: std.fs.File = try std.fs.cwd().createFile(out_file_name, .{});
     defer file.close();
 
     const terminal: Terminal = try .init(.stdout());
     defer terminal.deinit();
+    try terminal.file.writeAll("\x1b[38;5;226m");
 
     var buffer: [std.heap.pageSize() * 16]u8 = undefined;
     var editing: std.Deque(u8) = .initBuffer(&buffer);
@@ -20,21 +21,24 @@ pub fn main() !void {
     while (try terminal.next()) |event| {
         switch (event) {
             .char => |char| {
-                std.debug.print("{c}", .{char});
+                try terminal.file.writeAll(&.{char});
                 editing.pushBackAssumeCapacity(char);
             },
             .enter => {
-                std.debug.print("\n\r", .{});
+                try terminal.file.writeAll("\n\r");
                 editing.pushBackAssumeCapacity('\n');
             },
             .backspace => {
-                std.debug.print("\x1b[1D\x1b[K", .{});
+                try terminal.file.writeAll("\x1b[1D\x1b[K");
                 _ = editing.popBack();
             },
             .esc_code => |code| {
                 switch (code) {
+                    .up => try terminal.file.writeAll("\x1b[1A"),
+                    .down => try terminal.file.writeAll("\x1b[1B"),
+
                     else => |char| {
-                        std.debug.print("\n\rInvalidCode {d} {c}\n\r", .{ @intFromEnum(char), @intFromEnum(char) });
+                        std.debug.print("\n\rInvalid Esc Code {d} {c}\n\r", .{ @intFromEnum(char), @intFromEnum(char) });
                     },
                 }
             },
