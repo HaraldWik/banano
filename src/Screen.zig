@@ -4,7 +4,7 @@ file: std.fs.File,
 original: std.posix.termios,
 out: std.posix.termios,
 
-pub const Size = struct { row: u16, col: u16 };
+pub const Size = struct { row: u16 = 0, col: u16 = 0 };
 pub const Position = Size;
 
 pub const EscCode = enum(u8) {
@@ -105,13 +105,44 @@ pub fn next(self: @This()) !?Event {
     };
 }
 
+pub fn setCursor(self: @This(), pos: Position) !void {
+    var buffer: [64]u8 = undefined;
+    try self.file.writeAll(try std.fmt.bufPrint(&buffer, "\x1b[{d};{d}H", .{ pos.row + 1, pos.col + 1 }));
+}
+
+pub fn getCursor(self: @This()) !Position {
+    const stdin: std.fs.File = .stdin();
+
+    try self.file.writeAll("\x1b[6n");
+
+    var buffer: [32]u8 = undefined;
+    const n = try stdin.read(&buffer);
+    const response = buffer[0..n];
+
+    if (response.len < 4 or response[0] != 0x1b or response[1] != '[') return error.InvalidResponse;
+
+    var it = std.mem.tokenizeScalar(u8, response[2..], ';');
+    const row_str = it.next() orelse return error.ParseFail;
+    const col_str = it.next() orelse return error.ParseFail;
+
+    const row = try std.fmt.parseInt(u16, row_str, 10);
+    const col = try std.fmt.parseInt(u16, col_str[0 .. col_str.len - 1], 10);
+
+    return .{ .row = row, .col = col };
+}
+
 pub fn writeAt(self: @This(), pos: Position, bytes: []const u8) !void {
     const size = try self.getSize();
-    if (pos.row > size.@"0" or pos.col > size.@"1") return;
+    if (pos.row > size.row or pos.col > size.col) return;
 
-    var buffer: [128]u8 = undefined;
-    var file_writer = self.file.writer(&buffer);
-    const writer: *std.Io.Writer = &file_writer.interface;
-    try writer.print("\x1b[{d};{d}H", .{ pos.row, pos.col });
-    try writer.writeAll(bytes);
+    try self.setCursor(pos);
+    try self.file.writeAll(bytes);
+}
+
+pub fn printAt(self: @This(), pos: Position, buffer: []u8, comptime fmt: []const u8, args: anytype) !void {
+    try self.writeAt(pos, try std.fmt.bufPrint(buffer, fmt, args));
+}
+
+pub fn clear(self: @This()) !void {
+    try self.file.writeAll("\x1b[2J\x1b[H");
 }
