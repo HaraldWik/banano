@@ -1,10 +1,18 @@
 const std = @import("std");
 
+const Screen = @This();
+
 file: std.fs.File,
 original: std.posix.termios,
 out: std.posix.termios,
 
-pub const Size = struct { row: u16 = 0, col: u16 = 0 };
+pub const Size = struct {
+    row: u16 = 0,
+    col: u16 = 0,
+    pub fn add(a: @This(), b: @This()) @This() {
+        return .{ .row = a.row + b.row, .col = a.col + b.col };
+    }
+};
 pub const Position = Size;
 
 pub const EscCode = enum(u8) {
@@ -23,6 +31,30 @@ pub const Event = union(enum) {
     enter: void,
     backspace: void,
     esc_code: EscCode,
+};
+
+pub const Sub = struct {
+    parent: *Screen,
+    size: Size = .{},
+    pos: Position = .{},
+
+    pub fn writeAt(self: @This(), pos: Position, bytes: []const u8) !void {
+        if (pos.row > self.size.row or pos.col > self.size.col) return;
+        try self.parent.writeAt(.add(self.pos, pos), bytes);
+    }
+
+    pub fn printAt(self: @This(), pos: Position, buffer: []u8, comptime fmt: []const u8, args: anytype) !void {
+        if (pos.row > self.size.row or pos.col > self.size.col) return;
+        try self.parent.printAt(pos, buffer, fmt, args);
+    }
+
+    pub fn clear(self: @This()) !void {
+        for (self.pos.row..self.size.row) |row| {
+            for (self.pos.col..self.size.col) |col| {
+                try self.writeAt(.{ .row = row, .col = col }, " ");
+            }
+        }
+    }
 };
 
 pub fn init(file: std.fs.File) !@This() {

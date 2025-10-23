@@ -8,16 +8,16 @@ const color = "\x1b[38;5;226m"; // Banana color
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
 
-    const in_file_name = for (std.os.argv[1..]) |arg| {
+    const in_file_name: ?[:0]const u8 = for (std.os.argv[1..]) |arg| {
         std.fs.cwd().accessZ(arg, .{}) catch continue;
         break std.mem.span(arg);
-    } else "tmp";
+    } else null;
     var file_name_buffer: [std.fs.max_name_bytes]u8 = undefined;
-    const out_file_name = try std.fmt.bufPrint(&file_name_buffer, ".{s}.banano", .{in_file_name});
+    const out_file_name = try std.fmt.bufPrint(&file_name_buffer, ".{s}.banano", .{in_file_name orelse "tmp"});
     const file: std.fs.File = try std.fs.cwd().createFile(out_file_name, .{});
     defer file.close();
 
-    const screen: Screen = try .init(.stdout());
+    var screen: Screen = try .init(.stdout());
     defer screen.deinit();
     try screen.file.writeAll(color);
 
@@ -27,7 +27,18 @@ pub fn main() !void {
     });
     defer text.deinit();
 
-    try draw(screen, text, in_file_name);
+    if (in_file_name) |name| {
+        const in: std.fs.File = try std.fs.cwd().openFile(name, .{});
+        defer in.close();
+
+        var buffer: []u8 = try allocator.alloc(u8, @intCast((try in.stat()).size));
+        defer allocator.free(buffer);
+        const n = try in.readAll(buffer);
+        try text.insertSlice(0, buffer[0..n]);
+        try screen.writeAt(.{ .row = 3 }, name);
+    }
+
+    try draw(screen, text, in_file_name orelse "new file");
 
     var cursor: Screen.Position = .{ .row = 1 };
 
@@ -47,10 +58,10 @@ pub fn main() !void {
                 cursor.col += 1;
             },
             .backspace => {
-                if (text.len > 0) {
-                    text.delete(text.len - 1);
-                    cursor.col -= 1;
-                }
+                if (text.len <= 0) continue;
+
+                text.delete(text.len - 1);
+                cursor.col -|= 1;
             },
             .esc_code => |code| {
                 switch (code) {
@@ -64,11 +75,11 @@ pub fn main() !void {
                 }
             },
         }
-        try draw(screen, text, in_file_name);
+        try draw(screen, text, in_file_name orelse "new file");
     }
 
     try file.writeAll(text.str.items[0..text.len]);
-    try std.fs.cwd().rename(out_file_name, in_file_name);
+    try std.fs.cwd().rename(out_file_name, in_file_name orelse "new");
 }
 
 pub fn draw(screen: Screen, text: Text, file_name: [:0]const u8) !void {
