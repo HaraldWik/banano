@@ -5,35 +5,39 @@ const ansi = @import("ansi.zig");
 
 const color = "\x1b[38;5;226m"; // Banana color
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const arena = init.arena.allocator();
+    const io = init.io;
 
-    const in_file_name: ?[:0]const u8 = for (std.os.argv[1..]) |arg| {
-        std.fs.cwd().accessZ(arg, .{}) catch continue;
-        break std.mem.span(arg);
+    const args = try init.minimal.args.toSlice(arena);
+
+    const in_file_name: ?[:0]const u8 = for (args[1..]) |arg| {
+        std.Io.Dir.cwd().access(io, arg, .{}) catch continue;
+        break arg;
     } else null;
     var file_name_buffer: [std.fs.max_name_bytes]u8 = undefined;
     const out_file_name = try std.fmt.bufPrint(&file_name_buffer, ".{s}.banano", .{in_file_name orelse "tmp"});
-    const file: std.fs.File = try std.fs.cwd().createFile(out_file_name, .{});
-    defer file.close();
+    const file: std.Io.File = try std.Io.Dir.cwd().createFile(io, out_file_name, .{});
+    defer file.close(io);
 
-    var screen: Screen = try .init(.stdout());
+    var screen: Screen = try .init(io, .stdout());
     defer screen.deinit();
-    try screen.file.writeAll(color);
+    try screen.file.writeStreamingAll(io, color);
 
-    var text: Text = try .initCapacity(allocator, size: {
-        const file_size: usize = @intCast((try file.stat()).size);
+    var text: Text = try .initCapacity(gpa, size: {
+        const file_size: usize = @intCast((try file.stat(io)).size);
         break :size @max(std.heap.pageSize(), file_size);
     });
     defer text.deinit();
 
     if (in_file_name) |name| {
-        const in: std.fs.File = try std.fs.cwd().openFile(name, .{});
-        defer in.close();
+        const in: std.Io.File = try std.Io.Dir.cwd().openFile(io, name, .{});
+        defer in.close(io);
 
-        var buffer: []u8 = try allocator.alloc(u8, @intCast((try in.stat()).size));
-        defer allocator.free(buffer);
-        const n = try in.readAll(buffer);
+        var buffer: []u8 = try gpa.alloc(u8, @intCast((try in.stat(io)).size));
+        defer gpa.free(buffer);
+        const n = try in.readStreaming(io, &.{buffer});
         try text.insertSlice(0, buffer[0..n]);
         try screen.writeAt(.{ .row = 3 }, name);
     }
@@ -42,7 +46,7 @@ pub fn main() !void {
 
     var cursor: Screen.Position = .{ .row = 1 };
 
-    while (try screen.next()) |event| {
+    while (try screen.nextEvent()) |event| {
         const size: Screen.Size = try screen.getSize();
 
         switch (event) {
@@ -65,8 +69,8 @@ pub fn main() !void {
             },
             .esc_code => |code| {
                 switch (code) {
-                    .up => try screen.file.writeAll("\x1b[1A"),
-                    .down => try screen.file.writeAll("\x1b[1B"),
+                    .up => try screen.file.writeStreamingAll(io, "\x1b[1A"),
+                    .down => try screen.file.writeStreamingAll(io, "\x1b[1B"),
 
                     else => |char| {
                         var buffer: [64]u8 = undefined;
@@ -78,8 +82,8 @@ pub fn main() !void {
         try draw(screen, text, in_file_name orelse "new file");
     }
 
-    try file.writeAll(text.str.items[0..text.len]);
-    try std.fs.cwd().rename(out_file_name, in_file_name orelse "new");
+    try file.writeStreamingAll(io, text.str.items[0..text.len]);
+    try std.Io.Dir.cwd().rename(out_file_name, .cwd(), in_file_name orelse "new", io);
 }
 
 pub fn draw(screen: Screen, text: Text, file_name: [:0]const u8) !void {

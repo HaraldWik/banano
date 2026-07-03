@@ -1,8 +1,9 @@
-const std = @import("std");
-
 const Screen = @This();
 
-file: std.fs.File,
+const std = @import("std");
+
+io: std.Io,
+file: std.Io.File,
 original: std.posix.termios,
 out: std.posix.termios,
 
@@ -57,7 +58,7 @@ pub const Sub = struct {
     }
 };
 
-pub fn init(file: std.fs.File) !@This() {
+pub fn init(io: std.Io, file: std.Io.File) !Screen {
     const original: std.posix.termios = try std.posix.tcgetattr(file.handle);
     var out: std.posix.termios = original;
 
@@ -66,7 +67,7 @@ pub fn init(file: std.fs.File) !@This() {
         .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
-    const null_actions: []const u8 = &.{ std.posix.SIG.HUP, std.posix.SIG.INT, std.posix.SIG.QUIT, std.posix.SIG.TERM, std.posix.SIG.PIPE, std.posix.SIG.ALRM };
+    const null_actions: []const std.posix.SIG = &.{ .HUP, .INT, .QUIT, .TERM, .PIPE, .ALRM };
     for (null_actions) |null_action| std.posix.sigaction(null_action, &action, null);
 
     out.iflag = .{
@@ -92,20 +93,20 @@ pub fn init(file: std.fs.File) !@This() {
     try std.posix.tcsetattr(file.handle, .FLUSH, out);
     // hide mouse "\x1b[?25l"
     //                   new buffer     clear         move cursor top left
-    try file.writeAll("\x1b[?1049h" ++ "\x1b[2J" ++ "\x1b[H");
+    try file.writeStreamingAll(io, "\x1b[?1049h" ++ "\x1b[2J" ++ "\x1b[H");
 
-    return .{ .file = file, .original = original, .out = out };
+    return .{ .io = io, .file = file, .original = original, .out = out };
 }
 
-pub fn deinit(self: @This()) void {
+pub fn deinit(self: Screen) void {
     // show mouse "\x1b[?25h"
     //                  old buffer
-    self.file.writeAll("\x1b[?1049l") catch unreachable;
+    self.file.writeStreamingAll(self.io, "\x1b[?1049l") catch unreachable;
     std.posix.tcsetattr(self.file.handle, .FLUSH, self.original) catch unreachable;
 }
 
-pub fn getSize(self: @This()) !Size {
-    if (!self.file.supportsAnsiEscapeCodes()) return error.AnsiUnsupported;
+pub fn getSize(self: Screen) !Size {
+    if (!try self.file.supportsAnsiEscapeCodes(self.io)) return error.AnsiUnsupported;
 
     var size: std.posix.winsize = undefined;
     return switch (std.posix.errno(
@@ -123,9 +124,9 @@ pub fn getSize(self: @This()) !Size {
     };
 }
 
-pub fn next(self: @This()) !?Event {
+pub fn nextEvent(self: Screen) !?Event {
     var buffer: [3]u8 = undefined;
-    var file_reader = self.file.reader(&buffer);
+    var file_reader = self.file.reader(self.io, &buffer);
     const reader: *std.Io.Reader = &file_reader.interface;
 
     return switch (reader.takeByte() catch return null) {
@@ -137,18 +138,18 @@ pub fn next(self: @This()) !?Event {
     };
 }
 
-pub fn setCursor(self: @This(), pos: Position) !void {
+pub fn setCursor(self: Screen, pos: Position) !void {
     var buffer: [64]u8 = undefined;
-    try self.file.writeAll(try std.fmt.bufPrint(&buffer, "\x1b[{d};{d}H", .{ pos.row + 1, pos.col + 1 }));
+    try self.file.writeStreamingAll(self.io, try std.fmt.bufPrint(&buffer, "\x1b[{d};{d}H", .{ pos.row + 1, pos.col + 1 }));
 }
 
-pub fn getCursor(self: @This()) !Position {
-    const stdin: std.fs.File = .stdin();
+pub fn getCursor(self: Screen) !Position {
+    const stdin: std.Io.File = .stdin();
 
-    try self.file.writeAll("\x1b[6n");
+    try self.file.writeStreamingAll(self.io, "\x1b[6n");
 
     var buffer: [32]u8 = undefined;
-    const n = try stdin.read(&buffer);
+    const n = try stdin.readStreaming(&buffer);
     const response = buffer[0..n];
 
     if (response.len < 4 or response[0] != 0x1b or response[1] != '[') return error.InvalidResponse;
@@ -163,18 +164,18 @@ pub fn getCursor(self: @This()) !Position {
     return .{ .row = row, .col = col };
 }
 
-pub fn writeAt(self: @This(), pos: Position, bytes: []const u8) !void {
+pub fn writeAt(self: Screen, pos: Position, bytes: []const u8) !void {
     const size = try self.getSize();
     if (pos.row > size.row or pos.col > size.col) return;
 
     try self.setCursor(pos);
-    try self.file.writeAll(bytes);
+    try self.file.writeStreamingAll(self.io, bytes);
 }
 
-pub fn printAt(self: @This(), pos: Position, buffer: []u8, comptime fmt: []const u8, args: anytype) !void {
+pub fn printAt(self: Screen, pos: Position, buffer: []u8, comptime fmt: []const u8, args: anytype) !void {
     try self.writeAt(pos, try std.fmt.bufPrint(buffer, fmt, args));
 }
 
-pub fn clear(self: @This()) !void {
-    try self.file.writeAll("\x1b[2J\x1b[H");
+pub fn clear(self: Screen) !void {
+    try self.file.writeStreamingAll(self.io, "\x1b[2J\x1b[H");
 }
